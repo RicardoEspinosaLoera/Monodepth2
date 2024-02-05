@@ -25,7 +25,7 @@ import datasets
 import networks
 from IPython import embed
 import wandb
-
+import matplotlib.pyplot as plt
 _DEPTH_COLORMAP = plt.get_cmap('plasma', 256)  # for plotting
 
 wandb.init(project="Monodepth2", entity="respinosa")
