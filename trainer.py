@@ -13,7 +13,7 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from tensorboardX import SummaryWriter
+#from tensorboardX import SummaryWriter
 
 import json
 
@@ -24,6 +24,11 @@ from layers import *
 import datasets
 import networks
 from IPython import embed
+import wandb
+import matplotlib.pyplot as plt
+_DEPTH_COLORMAP = plt.get_cmap('plasma', 256)  # for plotting
+
+wandb.init(project="Monodepth2", entity="respinosa")
 
 
 class Trainer:
@@ -50,17 +55,26 @@ class Trainer:
 
         if self.opt.use_stereo:
             self.opt.frame_ids.append("s")
+        """
+        self.models["encoder"] = networks.ResnetEncoder(
+            self.opt.num_layers, self.opt.weights_init == "pretrained")
+        self.models["encoder"].to(self.device)"""
 
-       # self.models["encoder"] = networks.ResnetEncoder(
-        #    self.opt.num_layers, self.opt.weights_init == "pretrained")
-        self.models["encoder"] = networks.mpvit_small()
+        #MonoViT
+        self.models["encoder"] = networks.mpvit_small()            
         self.models["encoder"].num_ch_enc = [64,64,128,216,288]
         self.models["encoder"].to(self.device)
-        #self.parameters_to_train += list(self.models["encoder"].parameters())
 
+        self.parameters_to_train += list(self.models["encoder"].parameters())
+        
+        """
+        self.models["depth"] = networks.DepthDecoder(
+            self.models["encoder"].num_ch_enc, self.opt.scales)
+        self.models["depth"].to(self.device)"""
+        #MonoViT
         self.models["depth"] = networks.DepthDecoderT()
-            #self.models["encoder"].num_ch_enc, self.opt.scales)
         self.models["depth"].to(self.device)
+
         self.parameters_to_train += list(self.models["depth"].parameters())
 
         if self.use_pose_net:
@@ -101,24 +115,9 @@ class Trainer:
             self.models["predictive_mask"].to(self.device)
             self.parameters_to_train += list(self.models["predictive_mask"].parameters())
 
-        #self.model_optimizer = optim.AdamW(self.parameters_to_train, self.opt.learning_rate)
-        self.params = [ {
-            "params":self.parameters_to_train, 
-            "lr": 1e-4
-            #"weight_decay": 0.01
-            },
-            {
-            "params": list(self.models["encoder"].parameters()), 
-           "lr": self.opt.learning_rate
-            #"weight_decay": 0.01
-            } ]
-            #self.model_optimizer = optim.Adam(self.parameters_to_train, self.opt.learning_rate)
-        self.model_optimizer = optim.AdamW(self.params)
-        #self.model_optimizer = optim.Adam(self.parameters_to_train, self.opt.learning_rate)
-        self.model_lr_scheduler = optim.lr_scheduler.ExponentialLR(
-		self.model_optimizer,0.9)
-        #self.model_lr_scheduler = optim.lr_scheduler.StepLR(
-         #   self.model_optimizer, self.opt.scheduler_step_size, 0.5)
+        self.model_optimizer = optim.Adam(self.parameters_to_train, self.opt.learning_rate)
+        self.model_lr_scheduler = optim.lr_scheduler.StepLR(
+            self.model_optimizer, self.opt.scheduler_step_size, 0.1)
 
         if self.opt.load_weights_folder is not None:
             self.load_model()
@@ -131,6 +130,7 @@ class Trainer:
         datasets_dict = {"kitti": datasets.KITTIRAWDataset,
                          "kitti_odom": datasets.KITTIOdomDataset,
                          "endovis": datasets.SCAREDDataset}
+
         self.dataset = datasets_dict[self.opt.dataset]
 
         fpath = os.path.join(os.path.dirname(__file__), "splits", self.opt.split, "{}_files.txt")
@@ -156,9 +156,9 @@ class Trainer:
             num_workers=self.opt.num_workers, pin_memory=True, drop_last=True)
         self.val_iter = iter(self.val_loader)
 
-        self.writers = {}
-        for mode in ["train", "val"]:
-            self.writers[mode] = SummaryWriter(os.path.join(self.log_path, mode))
+        #self.writers = {}
+        """for mode in ["train", "val"]:
+            self.writers[mode] = SummaryWriter(os.path.join(self.log_path, mode))"""
 
         if not self.opt.no_ssim:
             self.ssim = SSIM()
@@ -211,7 +211,7 @@ class Trainer:
     def run_epoch(self):
         """Run a single epoch of training and validation
         """
-        self.model_lr_scheduler.step()
+        
 
         print("Training")
         self.set_train()
@@ -242,6 +242,7 @@ class Trainer:
                 self.val()
 
             self.step += 1
+        self.model_lr_scheduler.step()
 
     def process_batch(self, inputs):
         """Pass a minibatch through the network and generate images and losses
@@ -402,7 +403,7 @@ class Trainer:
                 outputs[("color", frame_id, scale)] = F.grid_sample(
                     inputs[("color", frame_id, source_scale)],
                     outputs[("sample", frame_id, scale)],
-                    padding_mode="border", align_corners=True)
+                    padding_mode="border",align_corners=True)
 
                 if not self.opt.disable_automasking:
                     outputs[("color_identity", frame_id, scale)] = \
@@ -515,6 +516,7 @@ class Trainer:
 
     def compute_depth_losses(self, inputs, outputs, losses):
         """Compute depth metrics, to allow monitoring during training
+
         This isn't particularly accurate as it averages over the entire batch,
         so is only used to give an indication of validation performance
         """
@@ -557,36 +559,27 @@ class Trainer:
     def log(self, mode, inputs, outputs, losses):
         """Write an event to the tensorboard events file
         """
-        writer = self.writers[mode]
+        #writer = self.writers[mode]
         for l, v in losses.items():
-            writer.add_scalar("{}".format(l), v, self.step)
+            wandb.log({mode+"{}".format(l):v},step =self.step)
 
         for j in range(min(4, self.opt.batch_size)):  # write a maxmimum of four images
-            for s in self.opt.scales:
-                for frame_id in self.opt.frame_ids:
-                    writer.add_image(
-                        "color_{}_{}/{}".format(frame_id, s, j),
-                        inputs[("color", frame_id, s)][j].data, self.step)
-                    if s == 0 and frame_id != 0:
-                        writer.add_image(
-                            "color_pred_{}_{}/{}".format(frame_id, s, j),
-                            outputs[("color", frame_id, s)][j].data, self.step)
+            s = 0  # log only max scale
+            for frame_id in self.opt.frame_ids:
 
-                writer.add_image(
-                    "disp_{}/{}".format(s, j),
-                    normalize_image(outputs[("disp", s)][j]), self.step)
-
-                if self.opt.predictive_mask:
-                    for f_idx, frame_id in enumerate(self.opt.frame_ids[1:]):
-                        writer.add_image(
-                            "predictive_mask_{}_{}/{}".format(frame_id, s, j),
-                            outputs["predictive_mask"][("disp", s)][j, f_idx][None, ...],
-                            self.step)
-
-                elif not self.opt.disable_automasking:
-                    writer.add_image(
-                        "automask_{}/{}".format(s, j),
-                        outputs["identity_selection/{}".format(s)][j][None, ...], self.step)
+                wandb.log({ "color_{}_{}/{}".format(frame_id, s, j): wandb.Image(inputs[("color", frame_id, s)][j].data)},step=self.step)
+                
+                if s == 0 and frame_id != 0:
+                    wandb.log({"color_pred_{}_{}/{}".format(frame_id, s, j): wandb.Image(outputs[("color", frame_id, s)][j].data)},step=self.step)
+                    #wandb.log({"color_pred_refined_{}_{}/{}".format(frame_id, s, j): wandb.Image(outputs[("color_refined", frame_id,s)][j].data)},step=self.step)
+                    #wandb.log({"contrast_{}_{}/{}".format(frame_id, s, j): wandb.Image(outputs[("ch",s, frame_id)][j].data)},step=self.step)
+                    #wandb.log({"brightness_{}_{}/{}".format(frame_id, s, j): wandb.Image(outputs[("bh",s, frame_id)][j].data)},step=self.step)
+            disp = self.colormap(outputs[("disp", s)][j, 0])
+            wandb.log({"disp_multi_{}/{}".format(s, j): wandb.Image(disp.transpose(1, 2, 0))},step=self.step)
+            """f = outputs["mf_"+str(s)+"_"+str(frame_id)][j].data
+            flow = self.flow2rgb(f,32)
+            flow = torch.from_numpy(flow)
+            wandb.log({"motion_flow_{}_{}".format(s,j): wandb.Image(flow)},step=self.step)"""
 
     def save_opts(self):
         """Save options to disk so we know what we ran this experiment with
@@ -602,6 +595,7 @@ class Trainer:
     def save_model(self):
         """Save model weights to disk
         """
+        print("save models",self.log_path)
         save_folder = os.path.join(self.log_path, "models", "weights_{}".format(self.epoch))
         if not os.path.exists(save_folder):
             os.makedirs(save_folder)
@@ -645,3 +639,33 @@ class Trainer:
             self.model_optimizer.load_state_dict(optimizer_dict)
         else:
             print("Cannot find Adam weights so Adam is randomly initialized")
+    
+    def colormap(self, inputs, normalize=True, torch_transpose=True):
+        if isinstance(inputs, torch.Tensor):
+            inputs = inputs.detach().cpu().numpy()
+
+        vis = inputs
+        if normalize:
+            ma = float(vis.max())
+            mi = float(vis.min())
+            d = ma - mi if ma != mi else 1e5
+            vis = (vis - mi) / d
+
+        if vis.ndim == 4:
+            vis = vis.transpose([0, 2, 3, 1])
+            vis = _DEPTH_COLORMAP(vis)
+            vis = vis[:, :, :, 0, :3]
+            if torch_transpose:
+                vis = vis.transpose(0, 3, 1, 2)
+        elif vis.ndim == 3:
+            vis = _DEPTH_COLORMAP(vis)
+            vis = vis[:, :, :, :3]
+            if torch_transpose:
+                vis = vis.transpose(0, 3, 1, 2)
+        elif vis.ndim == 2:
+            vis = _DEPTH_COLORMAP(vis)
+            vis = vis[..., :3]
+            if torch_transpose:
+                vis = vis.transpose(2, 0, 1)
+
+        return vis
