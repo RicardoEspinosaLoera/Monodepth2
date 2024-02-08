@@ -63,8 +63,9 @@ class Trainer:
         #MonoViT
         self.models["encoder"] = networks.mpvit_small()            
         self.models["encoder"].num_ch_enc = [64,64,128,216,288]
+        self.models["encoder"].to(self.device)
 
-        self.parameters_to_train += list(self.models["encoder"].parameters())
+        #self.parameters_to_train += list(self.models["encoder"].parameters())
         
         """
         self.models["depth"] = networks.DepthDecoder(
