@@ -13,6 +13,14 @@ from options import MonodepthOptions
 import datasets
 import networks
 
+import matplotlib.pyplot as plt
+
+import wandb
+
+wandb.init(project="Monodepth2-Testing", entity="respinosa")
+
+_DEPTH_COLORMAP = plt.get_cmap('plasma', 256)  # for plotting
+
 cv2.setNumThreads(0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
 
 
@@ -60,7 +68,7 @@ def evaluate(opt):
     """Evaluates a pretrained model using a specified test set
     """
     MIN_DEPTH = 1e-3
-    MAX_DEPTH = 80
+    MAX_DEPTH = 150
 
     assert sum((opt.eval_mono, opt.eval_stereo)) == 1, \
         "Please choose mono or stereo evaluation by setting either --eval_mono or --eval_stereo"
@@ -80,14 +88,14 @@ def evaluate(opt):
 
         encoder_dict = torch.load(encoder_path)
 
-        dataset = datasets.KITTIRAWDataset(opt.data_path, filenames,
+        dataset = datasets.SCAREDRAWDataset(opt.data_path, filenames,
                                            encoder_dict['height'], encoder_dict['width'],
                                            [0], 4, is_train=False)
         dataloader = DataLoader(dataset, 16, shuffle=False, num_workers=opt.num_workers,
                                 pin_memory=True, drop_last=False)
 
         encoder = networks.ResnetEncoder(opt.num_layers, False)
-        depth_decoder = networks.DepthDecoder(encoder.num_ch_enc)
+        depth_decoder = networks.DepthDecoder(encoder.num_ch_enc, scales=range(4))
 
         model_dict = encoder.state_dict()
         encoder.load_state_dict({k: v for k, v in encoder_dict.items() if k in model_dict})
@@ -112,7 +120,6 @@ def evaluate(opt):
                     input_color = torch.cat((input_color, torch.flip(input_color, [3])), 0)
 
                 output = depth_decoder(encoder(input_color))
-
                 pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
                 pred_disp = pred_disp.cpu()[:, 0].numpy()
 
@@ -184,8 +191,10 @@ def evaluate(opt):
         gt_height, gt_width = gt_depth.shape[:2]
 
         pred_disp = pred_disps[i]
+        disp = colormap(pred_disp)
+        wandb.log({"disp_testing": wandb.Image(disp.transpose(1, 2, 0))},step=i)
         pred_disp = cv2.resize(pred_disp, (gt_width, gt_height))
-        pred_depth = 1 / pred_disp
+        pred_depth = 1/pred_disp
 
         if opt.eval_split == "eigen":
             mask = np.logical_and(gt_depth > MIN_DEPTH, gt_depth < MAX_DEPTH)
@@ -197,7 +206,7 @@ def evaluate(opt):
             mask = np.logical_and(mask, crop_mask)
 
         else:
-            mask = gt_depth > 0
+            mask = np.logical_and(gt_depth > MIN_DEPTH, gt_depth < MAX_DEPTH)
 
         pred_depth = pred_depth[mask]
         gt_depth = gt_depth[mask]
@@ -224,6 +233,35 @@ def evaluate(opt):
     print(("&{: 8.3f}  " * 7).format(*mean_errors.tolist()) + "\\\\")
     print("\n-> Done!")
 
+def colormap(inputs, normalize=True, torch_transpose=True):
+        if isinstance(inputs, torch.Tensor):
+            inputs = inputs.detach().cpu().numpy()
+
+        vis = inputs
+        if normalize:
+            ma = float(vis.max())
+            mi = float(vis.min())
+            d = ma - mi if ma != mi else 1e5
+            vis = (vis - mi) / d
+
+        if vis.ndim == 4:
+            vis = vis.transpose([0, 2, 3, 1])
+            vis = _DEPTH_COLORMAP(vis)
+            vis = vis[:, :, :, 0, :3]
+            if torch_transpose:
+                vis = vis.transpose(0, 3, 1, 2)
+        elif vis.ndim == 3:
+            vis = _DEPTH_COLORMAP(vis)
+            vis = vis[:, :, :, :3]
+            if torch_transpose:
+                vis = vis.transpose(0, 3, 1, 2)
+        elif vis.ndim == 2:
+            vis = _DEPTH_COLORMAP(vis)
+            vis = vis[..., :3]
+            if torch_transpose:
+                vis = vis.transpose(2, 0, 1)
+
+        return vis
 
 if __name__ == "__main__":
     options = MonodepthOptions()
