@@ -12,14 +12,17 @@ from utils import readlines
 from options import MonodepthOptions
 import datasets
 import networks
+from layers import *
+from utils import *
 
 import matplotlib.pyplot as plt
 
 import wandb
 
-wandb.init(project="Monodepth2-Testing", entity="respinosa")
+wandb.init(project="iilDepth-Testing", entity="respinosa")
 
 _DEPTH_COLORMAP = plt.get_cmap('plasma', 256)  # for plotting
+
 
 cv2.setNumThreads(0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
 
@@ -31,11 +34,22 @@ splits_dir = os.path.join(os.path.dirname(__file__), "splits")
 # to convert our stereo predictions to real-world scale we multiply our depths by 5.4.
 STEREO_SCALE_FACTOR = 5.4
 
+def disp_to_depth(disp, min_depth, max_depth):
+    """Convert network's sigmoid output into depth prediction
+    The formula for this conversion is given in the 'additional considerations'
+    section of the paper.
+    """
+    min_disp = 1 / max_depth
+    max_disp = 1 / min_depth
+    scaled_disp = min_disp + (max_disp - min_disp) * disp
+    depth = 1 / scaled_disp
+    return scaled_disp, depth
 
 def compute_errors(gt, pred):
     """Computation of error metrics between predicted and ground truth depths
     """
     thresh = np.maximum((gt / pred), (pred / gt))
+    
     a1 = (thresh < 1.25     ).mean()
     a2 = (thresh < 1.25 ** 2).mean()
     a3 = (thresh < 1.25 ** 3).mean()
@@ -74,7 +88,6 @@ def evaluate(opt):
         "Please choose mono or stereo evaluation by setting either --eval_mono or --eval_stereo"
 
     if opt.ext_disp_to_eval is None:
-
         opt.load_weights_folder = os.path.expanduser(opt.load_weights_folder)
 
         assert os.path.isdir(opt.load_weights_folder), \
@@ -84,21 +97,30 @@ def evaluate(opt):
 
         filenames = readlines(os.path.join(splits_dir, opt.eval_split, "test_files.txt"))
         encoder_path = os.path.join(opt.load_weights_folder, "encoder.pth")
+        #encoder_path2 = os.path.join(opt.load_weights_folder, "ii_encoder_depth.pth")
         decoder_path = os.path.join(opt.load_weights_folder, "depth.pth")
-
+        
         encoder_dict = torch.load(encoder_path)
-
+        HEIGHT, WIDTH = 256, 320
+        #self.opt.height
+        #encoder_dict2 = torch.load(encoder_path2)
+        img_ext = '.png' if opt.png else '.jpg'
         dataset = datasets.SCAREDRAWDataset(opt.data_path, filenames,
-                                           encoder_dict['height'], encoder_dict['width'],
-                                           [0], 4, is_train=False)
+                                           HEIGHT, WIDTH,
+                                           [0], 4, is_train=False, img_ext=img_ext)
+
+        
         dataloader = DataLoader(dataset, 16, shuffle=False, num_workers=opt.num_workers,
                                 pin_memory=True, drop_last=False)
 
         encoder = networks.ResnetEncoder(opt.num_layers, False)
         depth_decoder = networks.DepthDecoder(encoder.num_ch_enc, scales=range(4))
 
+        #encoder2 = networks.ResnetEncoder(opt.num_layers, False)
+
         model_dict = encoder.state_dict()
         encoder.load_state_dict({k: v for k, v in encoder_dict.items() if k in model_dict})
+        #encoder2.load_state_dict({k: v for k, v in encoder_dict2.items() if k in model_dict})
         depth_decoder.load_state_dict(torch.load(decoder_path))
 
         encoder.cuda()
@@ -109,30 +131,36 @@ def evaluate(opt):
         pred_disps = []
 
         print("-> Computing predictions with size {}x{}".format(
-            encoder_dict['width'], encoder_dict['height']))
+            WIDTH, HEIGHT))
 
         with torch.no_grad():
             for data in dataloader:
                 input_color = data[("color", 0, 0)].cuda()
-
+                #print(input_color.shape)
                 if opt.post_process:
                     # Post-processed results require each image to have two forward passes
                     input_color = torch.cat((input_color, torch.flip(input_color, [3])), 0)
-
-                output = depth_decoder(encoder(input_color))
+                
+                features = encoder(input_color)
+                output = depth_decoder(features)
+                
                 pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
                 pred_disp = pred_disp.cpu()[:, 0].numpy()
 
+                """
                 if opt.post_process:
                     N = pred_disp.shape[0] // 2
-                    pred_disp = batch_post_process_disparity(pred_disp[:N], pred_disp[N:, :, ::-1])
+                    pred_disp = batch_post_process_disparity(pred_disp[:N], pred_disp[N:, :, ::-1])"""
 
                 pred_disps.append(pred_disp)
 
-        pred_disps = np.concatenate(pred_disps)
+        pred_disps = np.concatenate(pred_disps) 
+        #depth_tensor = torch.Tensor(pred_disps)
+        #median_prediction = torch.median(depth_tensor) 
+        #print(median_prediction)
 
     else:
-        # Load predictions from file
+        # Load predictions from fileF
         print("-> Loading predictions from {}".format(opt.ext_disp_to_eval))
         pred_disps = np.load(opt.ext_disp_to_eval)
 
@@ -151,7 +179,7 @@ def evaluate(opt):
     if opt.no_eval:
         print("-> Evaluation disabled. Done.")
         quit()
-
+    """
     elif opt.eval_split == 'benchmark':
         save_dir = os.path.join(opt.load_weights_folder, "benchmark_predictions")
         print("-> Saving out benchmark predictions to {}".format(save_dir))
@@ -167,7 +195,7 @@ def evaluate(opt):
             cv2.imwrite(save_path, depth)
 
         print("-> No ground truth is available for the KITTI benchmark, so not evaluating. Done.")
-        quit()
+        quit()"""
 
     gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
     gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1')["data"]
@@ -187,15 +215,20 @@ def evaluate(opt):
 
     for i in range(pred_disps.shape[0]):
 
-        gt_depth = gt_depths[i]
+        gt_depth = gt_depths[i] / 100.0
+        
+        ma = float(gt_depth.max())
+        mi = float(gt_depth.min())
+        d = ma - mi if ma != mi else 1e5
+        #print(ma,mi,"---",i)
+        gt_depth = (gt_depth - mi) / d
         gt_height, gt_width = gt_depth.shape[:2]
-
         pred_disp = pred_disps[i]
         disp = colormap(pred_disp)
         wandb.log({"disp_testing": wandb.Image(disp.transpose(1, 2, 0))},step=i)
         pred_disp = cv2.resize(pred_disp, (gt_width, gt_height))
         pred_depth = 1/pred_disp
-
+        """
         if opt.eval_split == "eigen":
             mask = np.logical_and(gt_depth > MIN_DEPTH, gt_depth < MAX_DEPTH)
 
@@ -205,23 +238,25 @@ def evaluate(opt):
             crop_mask[crop[0]:crop[1], crop[2]:crop[3]] = 1
             mask = np.logical_and(mask, crop_mask)
 
-        else:
-            mask = np.logical_and(gt_depth > MIN_DEPTH, gt_depth < MAX_DEPTH)
+        else:"""
+        
+        mask = np.logical_and(gt_depth > MIN_DEPTH, gt_depth < MAX_DEPTH)
 
         pred_depth = pred_depth[mask]
         gt_depth = gt_depth[mask]
-
-        pred_depth *= opt.pred_depth_scale_factor
+        #print(opt.pred_depth_scale_factor)
+        #pred_depth *= opt.pred_depth_scale_factor 
+        #pred_depth *= 1
+        
         if not opt.disable_median_scaling:
             ratio = np.median(gt_depth) / np.median(pred_depth)
             ratios.append(ratio)
             pred_depth *= ratio
-
+        
         pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
         pred_depth[pred_depth > MAX_DEPTH] = MAX_DEPTH
-
+        #print(gt_depth.shape,",",pred_depth.shape)
         errors.append(compute_errors(gt_depth, pred_depth))
-
     if not opt.disable_median_scaling:
         ratios = np.array(ratios)
         med = np.median(ratios)
