@@ -73,7 +73,7 @@ class SCAREDDataset(MonoDataset):
         folder = line[0]
 
         if len(line) == 3:
-            frame_index = int(line[1])
+            frame_index = line[1]
         else:
             frame_index = 0
 
@@ -101,12 +101,16 @@ class SCAREDRAWDataset(SCAREDDataset):
 
     def get_image_path(self, folder, frame_index, side):
         #SCATER
-        f_str = "{}{}".format(frame_index, self.img_ext)
-        image_path = os.path.join(self.data_path, folder, "data", f_str)
+        """f_str = "{}{}".format(frame_index, self.img_ext)
+        image_path = os.path.join(self.data_path, folder, "data", f_str)"""
         
         #COLON10k
         #f_str=str(frame_index) + self.img_ext
         #image_path = os.path.join(self.data_path, folder, f_str)
+
+        f_str = "{}{}".format(frame_index, self.img_ext)
+        folder1,folder2 = folder.split("/")
+        image_path = os.path.join(self.data_path, folder1,folder1,folder2, f_str)
             
         return image_path
 
