@@ -28,7 +28,7 @@ def export_gt_depths_kitti():
                         type=str,
                         help='which split to export gt from',
                         required=True,
-                        choices=["eigen", "eigen_benchmark","hamlyn"])
+                        choices=["eigen", "eigen_benchmark","hamlyn","SERV-CT"])
     opt = parser.parse_args()
 
     split_folder = os.path.join(os.path.dirname(__file__), "splits", opt.split)
@@ -55,7 +55,7 @@ def export_gt_depths_kitti():
         folder, file,_ = line.split()
         folder = folder.split("/")[0]
         #line = line.replace("/","_")[1:]
-        gt_depth_path = os.path.join(opt.data_path,folder,"depth", "{}.png".format(file))
+        gt_depth_path = os.path.join(opt.data_path,"SERV-CT",folder,"Ground_truth_CT","DepthL", "{}.png".format(file))
         print(gt_depth_path)
         #gt_depth = np.array(pil.open(gt_depth_path))
         #im = pil.open(gt_depth_path)
@@ -66,7 +66,7 @@ def export_gt_depths_kitti():
 
         print(gt_depth.shape)
         gt_depths.append(gt_depth)
-
+        
     output_path = os.path.join(split_folder, "gt_depths.npz")
 
     print("Saving to {} {}".format(opt.split,output_path))
