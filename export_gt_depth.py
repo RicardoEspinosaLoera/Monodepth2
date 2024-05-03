@@ -9,8 +9,8 @@ import os
 
 import argparse
 import numpy as np
-import cv2
 import PIL.Image as pil
+import cv2
 
 from utils import readlines
 #from kitti_utils import generate_depth_map
