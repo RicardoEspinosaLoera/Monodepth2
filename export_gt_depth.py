@@ -9,6 +9,7 @@ import os
 
 import argparse
 import numpy as np
+import cv2
 import PIL.Image as pil
 
 from utils import readlines
@@ -54,13 +55,15 @@ def export_gt_depths_kitti():
         folder, file,_ = line.split()
         folder = folder.split("/")[0]
         #line = line.replace("/","_")[1:]
-        gt_depth_path = os.path.join(opt.data_path,folder,folder,"depth01", "{}.png".format(file))
+        gt_depth_path = os.path.join(opt.data_path,folder,"depth", "{}.png".format(file))
         print(gt_depth_path)
         #gt_depth = np.array(pil.open(gt_depth_path))
-        im = pil.open(gt_depth_path)
-        newsize = (320, 256)
-        im = im.resize(newsize)
-        gt_depth = np.array(im).astype(np.float16)
+        #im = pil.open(gt_depth_path)
+        #newsize = (320, 256)
+        #im = im.resize(newsize)
+        im_gray = cv2.imread(gt_depth_path, cv2.IMREAD_GRAYSCALE)
+        gt_depth = im_gray / 256
+
         print(gt_depth.shape)
         gt_depths.append(gt_depth)
 
